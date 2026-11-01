@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>ピンボール・ブロック崩し</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      touch-action: manipulation;
+    }
+    canvas {
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-3 sm:p-5 select-none">
+
+  <!-- ゲームコンテナカード -->
+  <div class="bg-slate-900/90 text-slate-100 border border-slate-800 rounded-2xl p-4 shadow-2xl flex flex-col items-center max-w-[420px] w-full backdrop-blur-sm">
+    
+    <!-- ステータスバー（ステージ、残機、スコア） -->
+    <div class="flex items-center justify-between w-full mb-3 px-1">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 font-mono" id="stageBadge">STAGE 1</span>
+          <span id="livesDisplay" class="text-sm tracking-widest text-rose-500 font-bold">♥♥♥</span>
+        </div>
+        <h1 class="text-sm font-bold text-slate-100 mt-0.5">ピンボール・ブロック崩し</h1>
+      </div>
+      <div class="text-right">
+        <div class="text-[10px] text-slate-400 tracking-wider">SCORE</div>
+        <div id="scoreDisplay" class="text-lg font-black text-amber-400 font-mono tracking-tight leading-none">0</div>
+      </div>
+    </div>
+
+    <!-- ゲーム画面 Canvas -->
+    <div class="relative rounded-xl overflow-hidden border border-slate-800 shadow-inner bg-slate-950">
+      <canvas id="gameCanvas" width="380" height="460" class="block cursor-pointer"></canvas>
+      
+      <!-- ステージクリア演出通知（一時ポップアップ） -->
+      <div id="stageBanner" class="absolute inset-x-0 top-1/3 -translate-y-1/2 flex flex-col items-center justify-center pointer-events-none transition-all duration-300 opacity-0 scale-75">
+        <div class="text-2xl font-black text-amber-400 drop-shadow-[0_0_12px_rgba(251,191,36,0.8)]" id="bannerText">STAGE CLEAR!</div>
+        <div class="text-xs text-cyan-300 font-semibold tracking-wider mt-1" id="bannerSub">BONUS +1000 PTS</div>
+      </div>
+
+      <!-- スタート / ゲームオーバー / 全クリア オーバーレイ -->
+      <div id="overlay" class="absolute inset-0 bg-slate-950/85 backdrop-blur-[2px] flex flex-col items-center justify-center text-center p-4">
+        <div id="overlayTitle" class="text-xl font-black text-amber-400 mb-2">PINBALL BREAKOUT</div>
+        <p id="overlayDesc" class="text-xs text-slate-300 mb-4 max-w-[270px] leading-relaxed">
+          全3ステージを攻略せよ！<br>
+          バンパーで跳ね返し、動く障害物を突破しよう。
+        </p>
+        <button id="startBtn" class="px-6 py-2.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold text-sm shadow-lg shadow-orange-500/30 transition-transform active:scale-95">
+          タップしてスタート
+        </button>
+        <div class="text-[11px] text-slate-400 mt-3">
+          マウス / スワイプ / 左右キーで操作
+        </div>
+      </div>
+    </div>
+
+    <!-- ギミック説明 -->
+    <div class="grid grid-cols-3 gap-2 w-full mt-3 text-[11px] text-slate-400 text-center">
+      <div class="p-1.5 rounded-lg bg-slate-950/60 border border-slate-800">
+        <span class="font-bold text-amber-400">⚪ 動くバンパー</span><br>跳ね返して加速
+      </div>
+      <div class="p-1.5 rounded-lg bg-slate-950/60 border border-slate-800">
+        <span class="font-bold text-slate-300">🧱 硬質ブロック</span><br>2回当てて破壊
+      </div>
+      <div class="p-1.5 rounded-lg bg-slate-950/60 border border-slate-800">
+        <span class="font-bold text-cyan-400">◢◣ スリング</span><br>救済バウンド壁
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const overlayTitle = document.getElementById('overlayTitle');
+    const overlayDesc = document.getElementById('overlayDesc');
+    const startBtn = document.getElementById('startBtn');
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const stageBadge = document.getElementById('stageBadge');
+    const livesDisplay = document.getElementById('livesDisplay');
+    const stageBanner = document.getElementById('stageBanner');
+    const bannerText = document.getElementById('bannerText');
+    const bannerSub = document.getElementById('bannerSub');
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // --- Web Audio 効果音 ---
+    let audioCtx = null;
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function playTone(freq, type = 'sine', duration = 0.08, gainVal = 0.15) {
+      if (!audioCtx) return;
+      try {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(gainVal, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+      } catch (e) {}
+    }
+
+    function playFanfare() {
+      if (!audioCtx) return;
+      const notes = [523.25, 659.25, 783.99, 1046.50];
+      notes.forEach((freq, idx) => {
+        setTimeout(() => playTone(freq, 'triangle', 0.22, 0.2), idx * 120);
+      });
+    }
+
+    // --- ゲーム設定・状態 ---
+    let currentStage = 1;
+    const TOTAL_STAGES = 3;
+    let isPlaying = false;
+    let isStageTransition = false;
+    let score = 0;
+    let lives = 3;
+    let particles = [];
+    let frameCount = 0;
+
+    // パドル
+    const paddle = {
+      w: 72,
+      h: 12,
+      x: W / 2 - 36,
+      y: H - 32,
+      targetX: W / 2 - 36,
+      color: '#38bdf8'
+    };
+
+    // ボール
+    const ball = {
+      x: W / 2,
+      y: H - 90,
+      r: 6.5,
+      vx: 3,
+      vy: -4.5,
+      trail: [],
+      maxSpeed: 7.8,
+      minSpeed: 4.2
+    };
+    const GRAVITY = 0.045;
+
+    // スリングショット（下部左右の斜め壁）
+    const slingerLeft = { p1: { x: 0, y: 340 }, p2: { x: 38, y: 388 }, flash: 0 };
+    const slingerRight = { p1: { x: W, y: 340 }, p2: { x: W - 38, y: 388 }, flash: 0 };
+
+    let blocks = [];
+    let bumpers = [];
+
+    // --- ステージ別マップ生成 ---
+    function setupStage(stageNum) {
+      currentStage = stageNum;
+      stageBadge.textContent = `STAGE ${stageNum}`;
+      blocks = [];
+      bumpers = [];
+
+      const bw = 46;
+      const bh = 15;
+      const padding = 6;
+      const startX = (W - (6 * bw + 5 * padding)) / 2;
+
+      if (stageNum === 1) {
+        // --- STAGE 1: ピンボール入門（固定バンパー3基） ---
+        const colors = ['#f43f5e', '#fb923c', '#facc15', '#4ade80'];
+        for (let r = 0; r < 4; r++) {
+          for (let c = 0; c < 6; c++) {
+            if ((r === 1 && (c === 2 || c === 3)) || (r === 2 && (c === 1 || c === 4))) continue;
+            blocks.push({
+              x: startX + c * (bw + padding),
+              y: 45 + r * (bh + padding),
+              w: bw, h: bh,
+              color: colors[r],
+              maxHp: 1, hp: 1,
+              score: 20
+            });
+          }
+        }
+        bumpers = [
+          { x: W / 2 - 55, y: 165, r: 18, color: '#fbbf24', flash: 0, moveSpeed: 0 },
+          { x: W / 2 + 55, y: 165, r: 18, color: '#fbbf24', flash: 0, moveSpeed: 0 },
+          { x: W / 2,      y: 225, r: 20, color: '#f472b6', flash: 0, moveSpeed: 0 }
+        ];
+
+      } else if (stageNum === 2) {
+        // --- STAGE 2: 動くバンパー & 硬質ブロック ---
+        const colors = ['#a855f7', '#6366f1', '#38bdf8', '#2dd4bf'];
+        for (let r = 0; r < 5; r++) {
+          for (let c = 0; c < 6; c++) {
+            const isHard = (r === 2 && (c === 1 || c === 2 || c === 3 || c === 4));
+            blocks.push({
+              x: startX + c * (bw + padding),
+              y: 40 + r * (bh + padding),
+              w: bw, h: bh,
+              color: isHard ? '#94a3b8' : colors[r % colors.length],
+              maxHp: isHard ? 2 : 1,
+              hp: isHard ? 2 : 1,
+              score: isHard ? 50 : 25
+            });
+          }
+        }
+        bumpers = [
+          { baseX: W / 2 - 60, x: W / 2 - 60, y: 190, r: 18, color: '#f59e0b', flash: 0, moveSpeed: 0.03, moveRange: 35 },
+          { baseX: W / 2 + 60, x: W / 2 + 60, y: 190, r: 18, color: '#f59e0b', flash: 0, moveSpeed: -0.03, moveRange: 35 },
+          { baseX: W / 2,      x: W / 2,      y: 250, r: 22, color: '#ec4899', flash: 0, moveSpeed: 0.04, moveRange: 45 }
+        ];
+
+      } else if (stageNum === 3) {
+        // --- STAGE 3: クライマックス（ピラミッド要塞 & 4連バンパー） ---
+        for (let r = 0; r < 5; r++) {
+          for (let c = 0; c < 6; c++) {
+            if (c < r || c > 5 - r) continue;
+            const isBoss = (r === 0);
+            blocks.push({
+              x: startX + c * (bw + padding),
+              y: 35 + r * (bh + padding),
+              w: bw, h: bh,
+              color: isBoss ? '#f43f5e' : (r % 2 === 0 ? '#38bdf8' : '#eab308'),
+              maxHp: isBoss ? 3 : 2,
+              hp: isBoss ? 3 : 2,
+              score: isBoss ? 100 : 40
+            });
+          }
+        }
+        bumpers = [
+          { baseX: W / 2 - 75, x: W / 2 - 75, y: 170, r: 16, color: '#06b6d4', flash: 0, moveSpeed: 0.05, moveRange: 40 },
+          { baseX: W / 2 + 75, x: W / 2 + 75, y: 170, r: 16, color: '#06b6d4', flash: 0, moveSpeed: -0.05, moveRange: 40 },
+          { baseX: W / 2 - 40, x: W / 2 - 40, y: 235, r: 18, color: '#e11d48', flash: 0, moveSpeed: -0.04, moveRange: 30 },
+          { baseX: W / 2 + 40, x: W / 2 + 40, y: 235, r: 18, color: '#e11d48', flash: 0, moveSpeed: 0.04, moveRange: 30 }
+        ];
+      }
+    }
+
+    function resetBallPaddle() {
+      paddle.x = W / 2 - paddle.w / 2;
+      paddle.targetX = paddle.x;
+      ball.x = W / 2 + (Math.random() - 0.5) * 30;
+      ball.y = H - 90;
+      ball.vx = (Math.random() > 0.5 ? 1 : -1) * (2.8 + Math.random());
+      ball.vy = -4.5;
+      ball.trail = [];
+    }
+
+    function spawnParticles(x, y, color, count = 10) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const spd = Math.random() * 3 + 1;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * spd,
+          vy: Math.sin(angle) * spd,
+          life: 1.0,
+          decay: Math.random() * 0.03 + 0.02,
+          color,
+          r: Math.random() * 2.5 + 1.5
+        });
+      }
+    }
+
+    // --- ゲーム開始 ---
+    function startGame() {
+      initAudio();
+      score = 0;
+      lives = 3;
+      scoreDisplay.textContent = '0';
+      updateLivesDisplay();
+      particles = [];
+      setupStage(1);
+      resetBallPaddle();
+
+      isPlaying = true;
+      isStageTransition = false;
+      overlay.classList.add('hidden');
+      playTone(440, 'triangle', 0.12);
+    }
+
+    function updateLivesDisplay() {
+      let hearts = '';
+      for (let i = 0; i < lives; i++) hearts += '♥';
+      livesDisplay.textContent = hearts;
+    }
+
+    // --- ステージクリア ---
+    function onStageClear() {
+      isStageTransition = true;
+      playFanfare();
+
+      const stageBonus = currentStage * 1000;
+      score += stageBonus;
+      scoreDisplay.textContent = score;
+
+      for (let i = 0; i < 40; i++) {
+        spawnParticles(W / 2 + (Math.random() - 0.5) * 160, 160 + (Math.random() - 0.5) * 100, '#fbbf24', 2);
+      }
+
+      if (currentStage < TOTAL_STAGES) {
+        bannerText.textContent = `STAGE ${currentStage} CLEAR!`;
+        bannerSub.textContent = `BONUS +${stageBonus} PTS → NEXT STAGE!`;
+        stageBanner.classList.remove('opacity-0', 'scale-75');
+        stageBanner.classList.add('opacity-100', 'scale-100');
+
+        setTimeout(() => {
+          stageBanner.classList.remove('opacity-100', 'scale-100');
+          stageBanner.classList.add('opacity-0', 'scale-75');
+          setupStage(currentStage + 1);
+          resetBallPaddle();
+          isStageTransition = false;
+        }, 1800);
+
+      } else {
+        setTimeout(() => {
+          isPlaying = false;
+          overlayTitle.textContent = '🏆 ALL STAGES CLEARED!';
+          overlayTitle.className = 'text-xl font-black text-amber-400 mb-2 drop-shadow-[0_0_10px_rgba(251,191,36,0.6)]';
+          overlayDesc.innerHTML = `おめでとうございます！全ステージ制覇！<br>最終ハイスコア: <span class="font-bold text-amber-400 text-base font-mono">${score}</span> 点<br>ピンボールマスターの称号を獲得！`;
+          startBtn.textContent = '最初から再挑戦';
+          overlay.classList.remove('hidden');
+        }, 1200);
+      }
+    }
+
+    function onBallLost() {
+      lives--;
+      updateLivesDisplay();
+      playTone(180, 'sawtooth', 0.25, 0.2);
+
+      if (lives <= 0) {
+        isPlaying = false;
+        overlayTitle.textContent = 'GAME OVER';
+        overlayTitle.className = 'text-xl font-black text-rose-500 mb-2';
+        overlayDesc.innerHTML = `到達: <span class="text-amber-400 font-bold">STAGE ${currentStage}</span><br>スコア: <span class="font-bold text-amber-400 font-mono">${score}</span> 点<br>次はスリングショットで粘ろう！`;
+        startBtn.textContent = 'リトライ';
+        overlay.classList.remove('hidden');
+      } else {
+        resetBallPaddle();
+      }
+    }
+
+    // --- 操作 ---
+    function updatePaddleFromClientX(clientX) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (clientX - rect.left) * (W / rect.width);
+      paddle.targetX = Math.max(10, Math.min(W - paddle.w - 10, x - paddle.w / 2));
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!isPlaying || isStageTransition) return;
+      updatePaddleFromClientX(e.clientX);
+    });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (!isPlaying || isStageTransition || !e.touches[0]) return;
+      e.preventDefault();
+      updatePaddleFromClientX(e.touches[0].clientX);
+    }, { passive: false });
+
+    window.addEventListener('keydown', (e) => {
+      if (!isPlaying || isStageTransition) return;
+      const step = 28;
+      if (e.key === 'ArrowLeft') {
+        paddle.targetX = Math.max(10, paddle.targetX - step);
+      } else if (e.key === 'ArrowRight') {
+        paddle.targetX = Math.min(W - paddle.w - 10, paddle.targetX + step);
+      }
+    });
+
+    startBtn.addEventListener('click', startGame);
+
+    // --- 衝突判定（スリングショット） ---
+    function checkLineCircleCollision(p1, p2, circle, bounceMultiplier = 1.25) {
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const lenSq = dx * dx + dy * dy;
+      let t = ((circle.x - p1.x) * dx + (circle.y - p1.y) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+
+      const nearestX = p1.x + t * dx;
+      const nearestY = p1.y + t * dy;
+
+      const distSq = (circle.x - nearestX) ** 2 + (circle.y - nearestY) ** 2;
+      if (distSq <= circle.r * circle.r) {
+        const dist = Math.sqrt(distSq) || 0.001;
+        const nx = (circle.x - nearestX) / dist;
+        const ny = (circle.y - nearestY) / dist;
+
+        const dot = circle.vx * nx + circle.vy * ny;
+        if (dot < 0) {
+          circle.vx = (circle.vx - 2 * dot * nx) * bounceMultiplier;
+          circle.vy = (circle.vy - 2 * dot * ny) * bounceMultiplier;
+          circle.x = nearestX + nx * (circle.r + 1);
+          circle.y = nearestY + ny * (circle.r + 1);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // --- メインループ ---
+    function update() {
+      if (!isPlaying || isStageTransition) return;
+      frameCount++;
+
+      paddle.x += (paddle.targetX - paddle.x) * 0.35;
+
+      bumpers.forEach(b => {
+        if (b.moveSpeed) {
+          b.x = b.baseX + Math.sin(frameCount * b.moveSpeed) * b.moveRange;
+        }
+      });
+
+      ball.vy += GRAVITY;
+
+      const spd = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+      if (spd > ball.maxSpeed) {
+        ball.vx = (ball.vx / spd) * ball.maxSpeed;
+        ball.vy = (ball.vy / spd) * ball.maxSpeed;
+      } else if (spd < ball.minSpeed) {
+        ball.vx = (ball.vx / spd) * ball.minSpeed;
+        ball.vy = (ball.vy / spd) * ball.minSpeed;
+      }
+
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+
+      ball.trail.unshift({ x: ball.x, y: ball.y });
+      if (ball.trail.length > 5) ball.trail.pop();
+
+      // 左右壁
+      if (ball.x - ball.r < 10) {
+        ball.x = 10 + ball.r;
+        ball.vx = -ball.vx;
+        playTone(320, 'sine', 0.05, 0.08);
+      } else if (ball.x + ball.r > W - 10) {
+        ball.x = W - 10 - ball.r;
+        ball.vx = -ball.vx;
+        playTone(320, 'sine', 0.05, 0.08);
+      }
+
+      // 天井曲面ドーム壁
+      const cornerR = 36;
+      if (ball.x < cornerR && ball.y < cornerR) {
+        const dSq = (ball.x - cornerR) ** 2 + (ball.y - cornerR) ** 2;
+        if (dSq > (cornerR - ball.r) ** 2) {
+          const d = Math.sqrt(dSq);
+          const nx = (cornerR - ball.x) / d;
+          const ny = (cornerR - ball.y) / d;
+          const dot = ball.vx * nx + ball.vy * ny;
+          ball.vx -= 2 * dot * nx;
+          ball.vy -= 2 * dot * ny;
+          ball.x = cornerR - nx * (cornerR - ball.r);
+          ball.y = cornerR - ny * (cornerR - ball.r);
+          playTone(400, 'sine', 0.06);
+        }
+      } else if (ball.x > W - cornerR && ball.y < cornerR) {
+        const dSq = (ball.x - (W - cornerR)) ** 2 + (ball.y - cornerR) ** 2;
+        if (dSq > (cornerR - ball.r) ** 2) {
+          const d = Math.sqrt(dSq);
+          const nx = ((W - cornerR) - ball.x) / d;
+          const ny = (cornerR - ball.y) / d;
+          const dot = ball.vx * nx + ball.vy * ny;
+          ball.vx -= 2 * dot * nx;
+          ball.vy -= 2 * dot * ny;
+          ball.x = (W - cornerR) - nx * (cornerR - ball.r);
+          ball.y = cornerR - ny * (cornerR - ball.r);
+          playTone(400, 'sine', 0.06);
+        }
+      } else if (ball.y - ball.r < 8) {
+        ball.y = 8 + ball.r;
+        ball.vy = -ball.vy;
+        playTone(360, 'sine', 0.05, 0.08);
+      }
+
+      // スリングショット衝突
+      if (checkLineCircleCollision(slingerLeft.p1, slingerLeft.p2, ball, 1.25)) {
+        slingerLeft.flash = 12;
+        playTone(520, 'square', 0.08, 0.2);
+        spawnParticles(ball.x, ball.y, '#38bdf8', 8);
+        score += 15;
+        scoreDisplay.textContent = score;
+      }
+      if (checkLineCircleCollision(slingerRight.p1, slingerRight.p2, ball, 1.25)) {
+        slingerRight.flash = 12;
+        playTone(520, 'square', 0.08, 0.2);
+        spawnParticles(ball.x, ball.y, '#38bdf8', 8);
+        score += 15;
+        scoreDisplay.textContent = score;
+      }
+
+      // バンパー衝突
+      bumpers.forEach(b => {
+        const dx = ball.x - b.x;
+        const dy = ball.y - b.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const minDist = ball.r + b.r;
+
+        if (dist < minDist) {
+          const nx = dx / (dist || 1);
+          const ny = dy / (dist || 1);
+
+          const bounceSpeed = Math.max(spd * 1.15, 6.2);
+          ball.vx = nx * bounceSpeed;
+          ball.vy = ny * bounceSpeed;
+          ball.x = b.x + nx * (minDist + 1);
+          ball.y = b.y + ny * (minDist + 1);
+
+          b.flash = 15;
+          score += 30;
+          scoreDisplay.textContent = score;
+          spawnParticles(b.x, b.y, b.color, 12);
+          playTone(587.33 + currentStage * 40, 'triangle', 0.12, 0.25);
+        }
+      });
+
+      // パドル衝突
+      if (
+        ball.y + ball.r >= paddle.y &&
+        ball.y - ball.r <= paddle.y + paddle.h &&
+        ball.x >= paddle.x - 2 &&
+        ball.x <= paddle.x + paddle.w + 2 &&
+        ball.vy > 0
+      ) {
+        const hitOffset = (ball.x - (paddle.x + paddle.w / 2)) / (paddle.w / 2);
+        const maxAngle = Math.PI * 0.38;
+        const angle = hitOffset * maxAngle - Math.PI / 2;
+
+        const currentSpeed = Math.max(spd, 4.8);
+        ball.vx = Math.cos(angle) * currentSpeed;
+        ball.vy = Math.sin(angle) * currentSpeed;
+        ball.y = paddle.y - ball.r - 1;
+
+        playTone(280, 'sine', 0.08, 0.2);
+        spawnParticles(ball.x, paddle.y, paddle.color, 6);
+      }
+
+      // ブロック衝突
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const bk = blocks[i];
+        if (
+          ball.x + ball.r >= bk.x &&
+          ball.x - ball.r <= bk.x + bk.w &&
+          ball.y + ball.r >= bk.y &&
+          ball.y - ball.r <= bk.y + bk.h
+        ) {
+          const overlapLeft = (ball.x + ball.r) - bk.x;
+          const overlapRight = (bk.x + bk.w) - (ball.x - ball.r);
+          const overlapTop = (ball.y + ball.r) - bk.y;
+          const overlapBottom = (bk.y + bk.h) - (ball.y - ball.r);
+
+          const minOverlapX = Math.min(overlapLeft, overlapRight);
+          const minOverlapY = Math.min(overlapTop, overlapBottom);
+
+          if (minOverlapX < minOverlapY) {
+            ball.vx = -ball.vx;
+          } else {
+            ball.vy = -ball.vy;
+          }
+
+          bk.hp--;
+          if (bk.hp <= 0) {
+            score += bk.score;
+            scoreDisplay.textContent = score;
+            spawnParticles(bk.x + bk.w / 2, bk.y + bk.h / 2, bk.color, 12);
+            playTone(440 + bk.score * 4, 'square', 0.08, 0.15);
+            blocks.splice(i, 1);
+          } else {
+            score += 10;
+            scoreDisplay.textContent = score;
+            spawnParticles(ball.x, ball.y, '#ffffff', 5);
+            playTone(330, 'square', 0.06, 0.12);
+          }
+          break;
+        }
+      }
+
+      if (blocks.length === 0) {
+        onStageClear();
+        return;
+      }
+
+      if (ball.y - ball.r > H) {
+        onBallLost();
+        return;
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= p.decay;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    // --- 描画 ---
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // 背景グリッド
+      ctx.strokeStyle = 'rgba(51, 65, 85, 0.35)';
+      ctx.lineWidth = 1;
+      for (let x = 20; x < W; x += 20) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      }
+      for (let y = 20; y < H; y += 20) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      }
+
+      // 外枠ドーム
+      ctx.strokeStyle = currentStage === 3 ? '#ec4899' : (currentStage === 2 ? '#a855f7' : '#38bdf8');
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(10, H);
+      ctx.lineTo(10, 36);
+      ctx.arcTo(10, 8, 36, 8, 28);
+      ctx.lineTo(W - 36, 8);
+      ctx.arcTo(W - 10, 8, W - 10, 36, 28);
+      ctx.lineTo(W - 10, H);
+      ctx.stroke();
+
+      // スリングショット
+      ctx.fillStyle = slingerLeft.flash > 0 ? '#38bdf8' : '#0369a1';
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, slingerLeft.p1.y);
+      ctx.lineTo(slingerLeft.p2.x, slingerLeft.p2.y);
+      ctx.lineTo(0, slingerLeft.p2.y);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      if (slingerLeft.flash > 0) slingerLeft.flash--;
+
+      ctx.fillStyle = slingerRight.flash > 0 ? '#38bdf8' : '#0369a1';
+      ctx.strokeStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.moveTo(W, slingerRight.p1.y);
+      ctx.lineTo(slingerRight.p2.x, slingerRight.p2.y);
+      ctx.lineTo(W, slingerRight.p2.y);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      if (slingerRight.flash > 0) slingerRight.flash--;
+
+      // バンパー
+      bumpers.forEach(b => {
+        const isFlashing = b.flash > 0;
+        const currentR = b.r + (isFlashing ? 3 : 0);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, currentR, 0, Math.PI * 2);
+        ctx.fillStyle = isFlashing ? '#ffffff' : '#0f172a';
+        ctx.fill();
+        ctx.strokeStyle = b.color;
+        ctx.lineWidth = isFlashing ? 5 : 3;
+        ctx.shadowColor = b.color;
+        ctx.shadowBlur = isFlashing ? 18 : 8;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, currentR * 0.45, 0, Math.PI * 2);
+        ctx.fillStyle = b.color;
+        ctx.fill();
+        ctx.restore();
+
+        if (b.flash > 0) b.flash--;
+      });
+
+      // ブロック
+      blocks.forEach(bk => {
+        ctx.save();
+        ctx.fillStyle = bk.color;
+        ctx.shadowColor = bk.color;
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        ctx.roundRect(bk.x, bk.y, bk.w, bk.h, 4);
+        ctx.fill();
+
+        if (bk.maxHp > 1 && bk.hp === 1) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(bk.x + 8, bk.y + 4);
+          ctx.lineTo(bk.x + bk.w / 2, bk.y + bk.h - 4);
+          ctx.lineTo(bk.x + bk.w - 8, bk.y + 3);
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+          ctx.fillRect(bk.x + 2, bk.y + 2, bk.w - 4, 3);
+        }
+        ctx.restore();
+      });
+
+      // ボールの軌跡
+      ball.trail.forEach((t, i) => {
+        const alpha = (1 - i / ball.trail.length) * 0.35;
+        ctx.fillStyle = `rgba(251, 191, 36, ${alpha})`;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, ball.r * (1 - i * 0.12), 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // ボール
+      ctx.save();
+      const grad = ctx.createRadialGradient(
+        ball.x - 2, ball.y - 2, 1,
+        ball.x, ball.y, ball.r
+      );
+      grad.addColorStop(0, '#ffffff');
+      grad.addColorStop(0.4, '#fbbf24');
+      grad.addColorStop(1, '#d97706');
+
+      ctx.fillStyle = grad;
+      ctx.shadowColor = '#fbbf24';
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // パドル
+      ctx.save();
+      ctx.fillStyle = paddle.color;
+      ctx.shadowColor = paddle.color;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.roundRect(paddle.x, paddle.y, paddle.w, paddle.h, 6);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+      ctx.fillRect(paddle.x + 4, paddle.y + 2, paddle.w - 8, 2);
+      ctx.restore();
+
+      // パーティクル
+      particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = Math.max(0, p.life);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1.0;
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    setupStage(1);
+    draw();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
